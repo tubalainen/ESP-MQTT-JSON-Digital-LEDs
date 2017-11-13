@@ -23,55 +23,28 @@
 #include <ArduinoJson.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-#include "FastLED.h"
+#define FASTLED_INTERNAL
+#define FASTLED_INTERRUPT_RETRY_COUNT 0
+#define FASTLED_ALLOW_INTERRUPTS 0
+#include <FastLED.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-
-
-
-/************ WIFI and MQTT Information (CHANGE THESE FOR YOUR SETUP) ******************/
-const char* ssid = "YourSSID"; //type your WIFI information inside the quotes
-const char* password = "YourWIFIpassword";
-const char* mqtt_server = "your.MQTT.server.ip";
-const char* mqtt_username = "yourMQTTusername";
-const char* mqtt_password = "yourMQTTpassword";
-const int mqtt_port = 1883;
-
-
-
-/**************************** FOR OTA **************************************************/
-#define SENSORNAME "porch" //change this to whatever you want to call your device
-#define OTApassword "yourOTApassword" //the password you will need to enter to upload remotely via the ArduinoIDE
-int OTAport = 8266;
-
+#include "Config.h"
 
 
 /************* MQTT TOPICS (change these topics as you wish)  **************************/
-const char* light_state_topic = "bruh/porch";
-const char* light_set_topic = "bruh/porch/set";
-
 const char* on_cmd = "ON";
 const char* off_cmd = "OFF";
 const char* effect = "solid";
 String effectString = "solid";
 String oldeffectString = "solid";
 
-
-
 /****************************************FOR JSON***************************************/
 const int BUFFER_SIZE = JSON_OBJECT_SIZE(10);
 #define MQTT_MAX_PACKET_SIZE 512
 
-
-
 /*********************************** FastLED Defintions ********************************/
-#define NUM_LEDS    186
-#define DATA_PIN    5
-//#define CLOCK_PIN 5
-#define CHIPSET     WS2811
-#define COLOR_ORDER BRG
-
 byte realRed = 0;
 byte realGreen = 0;
 byte realBlue = 0;
@@ -80,7 +53,7 @@ byte red = 255;
 byte green = 255;
 byte blue = 255;
 byte brightness = 255;
-
+int color_temp = 144;
 
 
 /******************************** GLOBALS for fade/flash *******************************/
@@ -109,7 +82,7 @@ byte flashBrightness = brightness;
 /********************************** GLOBALS for EFFECTS ******************************/
 //RAINBOW
 uint8_t thishue = 0;                                          // Starting hue value.
-uint8_t deltahue = 10;
+uint8_t deltahue = 5;
 
 //CANDYCANE
 CRGBPalette16 currentPalettestriped; //for Candy Cane
@@ -170,6 +143,45 @@ bool gReverseDirection = false;
 uint8_t gHue = 0;
 
 
+
+
+CRGB leds2[NUM_LEDS];
+CRGB leds3[NUM_LEDS];
+unsigned long previousMillis;
+TBlendType    currentBlending;
+
+int            twinkrate = 100;                                   // The higher the value, the lower the number of twinkles.                                 // A delay value for the sequence(s).
+uint8_t        thisfade =   8;                                    // How quickly does it fade? Lower = slower fade rate.                                     // The hue.
+uint8_t        thisbri = 255;                                     // Brightness of a sequence.
+bool           randhue =   1;                                     // Do we want random colours all the time? 1 = yes.
+uint8_t        thisinc = 1;
+int            huediff = 256;
+unsigned int   ledLoc = 0;
+uint16_t       xscale = 30;                                       // Wouldn't recommend changing this on the fly, or the animation will be really blocky.
+uint16_t       yscale = 30;
+uint8_t        thisbright = 255;                                  // How bright should the LED/display be.
+uint8_t        thisbeat =   5;
+uint8_t        curhue =   0;
+uint8_t        thisdiff =  16;
+uint8_t        numdots =   4;
+int8_t         thisspeed = 8;
+uint8_t        allfreq = 32;                                      // You can change the frequency, thus distance between bars.
+int            thisphase = 0;
+uint8_t        thiscutoff = 192;                                  // You can change the cutoff value to display this wave. Lower value = longer wave.
+uint8_t        bgclr = 0;                                         // A rotating background colour.
+uint8_t        bgbright = 10;                                     // Brightness of background colour
+uint8_t thatbeat =  28;
+int        myhue =   0;
+
+CRGB clr1;
+CRGB clr2;
+uint8_t speed;
+uint8_t loc1;
+uint8_t loc2;
+uint8_t ran1;
+uint8_t ran2;
+
+
 WiFiClient espClient;
 PubSubClient client(espClient);
 struct CRGB leds[NUM_LEDS];
@@ -219,6 +231,7 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
+  dist = random16(12345);
 }
 
 
@@ -384,8 +397,8 @@ bool processJson(char* message) {
     
     if (root.containsKey("color_temp")) {
       //temp comes in as mireds, need to convert to kelvin then to RGB
-      int color_temp = root["color_temp"];
-      unsigned int kelvin  = MILLION / color_temp;
+      color_temp = root["color_temp"];
+      unsigned int kelvin  = 1000000 / color_temp;
       
       temp2rgb(kelvin);
       
@@ -429,7 +442,7 @@ void sendState() {
 
   root["brightness"] = brightness;
   root["effect"] = effectString.c_str();
-
+  root["color_temp"] = color_temp;
 
   char buffer[root.measureLength() + 1];
   root.printTo(buffer, sizeof(buffer));
@@ -535,7 +548,7 @@ void loop() {
 
   //EFFECT CONFETTI
   if (effectString == "confetti" ) {
-    fadeToBlackBy( leds, NUM_LEDS, 25);
+    fadeToBlackBy( leds, NUM_LEDS, 10);
     int pos = random16(NUM_LEDS);
     leds[pos] += CRGB(realRed + random8(64), realGreen, realBlue);
     if (transitionTime == 0 or transitionTime == NULL) {
@@ -602,6 +615,225 @@ void loop() {
 
   random16_add_entropy( random8());
 
+  //====================================================
+  if (effectString == "animations") {
+    animationA();                                               // render the first animation into leds2
+    animationB();
+    uint8_t ratio = beatsin8(2);
+    for (int i = 0; i < NUM_LEDS; i++) {                        // mix the 2 arrays together
+      leds[i] = blend( leds2[i], leds3[i], ratio );
+    }
+
+    showleds();
+  }
+  if (effectString == "template") {
+    ChangeMe();                                                 // Check the demo loop for changes to the variables.
+
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+    }
+
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking delay to update/display the sequence.
+      twinkle();
+    }
+
+    EVERY_N_SECONDS(5) {                                        // Change the target palette to a random one every 5 seconds.
+      static uint8_t baseC = random8();                         // You can use this as a baseline colour if you want similar hues in the next line.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    showleds();
+  }
+  if (effectString == "beatwave") {
+    beatwave();
+
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+    }
+
+    EVERY_N_SECONDS(5) {                                        // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    showleds();
+  }
+  if (effectString == "blendwave") {
+    blendwave();
+    showleds();
+  }
+  if (effectString == "blur") {
+    blur();
+    showleds();
+  }
+  if (effectString == "confetti 2") {
+    ChangeMe();                                                 // Check the demo loop for changes to the variables.
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking delay to update/display the sequence.
+      confetti();
+    }
+    showleds();
+  }
+  if (effectString == "confetti pal") {
+    ChangeMe();                                                 // Check the demo loop for changes to the variables.
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+    }
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking delay to update/display the sequence.
+      confetti_pal();
+    }
+    showleds();
+  }
+  if (effectString == "dotbeat") {
+    dot_beat();
+    showleds();
+  }
+  if (effectString == "easing") {
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking delay to update/display the sequence.
+      ease();
+    }
+    showleds();
+  }
+  if (effectString == "every n example") {
+    everynex();
+    showleds();
+  }
+  if (effectString == "fill grad") {
+    blendme();
+    showleds();
+  }
+  if (effectString == "inoise8 mover") {
+    EVERY_N_MILLISECONDS(10) {
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+      inoise8_mover();                                          // Update the LED array with noise at the new location
+      fadeToBlackBy(leds, NUM_LEDS, 4);
+    }
+    EVERY_N_SECONDS(5) {                                        // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    showleds();
+  }
+  if (effectString == "inoise8 pal") {
+    EVERY_N_MILLISECONDS(10) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+      fillnoise8();                                                            // Update the LED array with noise at the new location
+    }
+
+    EVERY_N_SECONDS(5) {                                        // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    showleds();
+  }
+  if (effectString == "noise 16 1") {
+    EVERY_N_MILLISECONDS(50) {
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
+    }
+
+    EVERY_N_SECONDS(5) {             // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    uint8_t maxChanges = 24;
+    noise16_1();
+    showleds();
+  }
+  if (effectString == "noise 16 2") {
+    EVERY_N_MILLISECONDS(50) {
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
+    }
+
+    EVERY_N_SECONDS(5) {             // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    uint8_t maxChanges = 24;
+    noise16_2();
+    showleds();
+  }
+  if (effectString == "noise 16 3") {
+    EVERY_N_MILLISECONDS(50) {
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
+    }
+
+    EVERY_N_SECONDS(5) {             // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    uint8_t maxChanges = 24;
+    noise16_3();
+    showleds();
+  }
+  if (effectString == "one sine pal") {
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking delay to update/display the sequence.
+      one_sine_pal(millis() >> 4);
+    }
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+    }
+    EVERY_N_SECONDS(5) {                                        // Change the target palette to a random one every 5 seconds.
+      static uint8_t baseC = random8();                         // You can use this as a baseline colour if you want similar hues in the next line.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+    showleds();
+  }
+  if (effectString == "palette cross fade") {
+    ChangePalettePeriodically();
+
+
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);
+    }
+
+    EVERY_N_MILLISECONDS(thisdelay) {
+      static uint8_t startIndex = 0;
+      startIndex += 1;                                 // motion speed
+      FillLEDsFromPaletteColors(startIndex);
+    }
+    showleds();
+  }
+  if (effectString == "rainbow beat") {
+    rainbow_beat();
+    showleds();
+  }
+  if (effectString == "rainbow march") {
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking routine to update/display the sequence.
+      rainbow_march();
+    }
+    showleds();
+  }
+  if (effectString == "ripple pal") {
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+    }
+
+    EVERY_N_SECONDS(3) {
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, 32), CHSV(random8(), random8(64) + 192, 255), CHSV(random8(), 255, 32), CHSV(random8(), 255, 255));
+    }
+
+    EVERY_N_MILLISECONDS(thisdelay) {                                   // FastLED based non-blocking delay to update/display the sequence.
+      ripple();
+
+    }
+    showleds();
+
+  }
+  if (effectString == "sinelon") {
+    EVERY_N_MILLISECONDS(100) {
+      uint8_t maxChanges = 24;
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);   // AWESOME palette blending capability.
+    }
+
+    EVERY_N_SECONDS(5) {                                        // Change the target palette to a random one every 5 seconds.
+      static uint8_t baseC = random8();                         // You can use this as a baseline colour if you want similar hues in the next line.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)), CHSV(random8(), 192, random8(128, 255)), CHSV(random8(), 255, random8(128, 255)));
+    }
+
+    EVERY_N_MILLISECONDS(thisdelay) {                           // FastLED based non-blocking delay to update/display the sequence.
+      sinelon();                                                // Call our sequence.
+    }
+    showleds();
+  }
+  //====================================================
 
   //EFFECT Glitter
   if (effectString == "glitter") {
@@ -1056,56 +1288,372 @@ void showleds() {
   }
 }
 void temp2rgb(unsigned int kelvin) {
-    int tmp_internal = kelvin / 100.0;
-    
-    // red 
-    if (tmp_internal <= 66) {
-        red = 255;
+  int tmp_internal = kelvin / 100.0;
+
+  // red
+  if (tmp_internal <= 66) {
+    red = 255;
+  } else {
+    float tmp_red = 329.698727446 * pow(tmp_internal - 60, -0.1332047592);
+    if (tmp_red < 0) {
+      red = 0;
+    } else if (tmp_red > 255) {
+      red = 255;
     } else {
-        float tmp_red = 329.698727446 * pow(tmp_internal - 60, -0.1332047592);
-        if (tmp_red < 0) {
-            red = 0;
-        } else if (tmp_red > 255) {
-            red = 255;
-        } else {
-            red = tmp_red;
-        }
+      red = tmp_red;
     }
-    
-    // green
-    if (tmp_internal <=66){
-        float tmp_green = 99.4708025861 * log(tmp_internal) - 161.1195681661;
-        if (tmp_green < 0) {
-            green = 0;
-        } else if (tmp_green > 255) {
-            green = 255;
-        } else {
-            green = tmp_green;
-        }
+  }
+
+  // green
+  if (tmp_internal <= 66) {
+    float tmp_green = 99.4708025861 * log(tmp_internal) - 161.1195681661;
+    if (tmp_green < 0) {
+      green = 0;
+    } else if (tmp_green > 255) {
+      green = 255;
     } else {
-        float tmp_green = 288.1221695283 * pow(tmp_internal - 60, -0.0755148492);
-        if (tmp_green < 0) {
-            green = 0;
-        } else if (tmp_green > 255) {
-            green = 255;
-        } else {
-            green = tmp_green;
-        }
+      green = tmp_green;
     }
-    
-    // blue
-    if (tmp_internal >=66) {
-        blue = 255;
-    } else if (tmp_internal <= 19) {
-        blue = 0;
+  } else {
+    float tmp_green = 288.1221695283 * pow(tmp_internal - 60, -0.0755148492);
+    if (tmp_green < 0) {
+      green = 0;
+    } else if (tmp_green > 255) {
+      green = 255;
     } else {
-        float tmp_blue = 138.5177312231 * log(tmp_internal - 10) - 305.0447927307;
-        if (tmp_blue < 0) {
-            blue = 0;
-        } else if (tmp_blue > 255) {
-            blue = 255;
-        } else {
-            blue = tmp_blue;
-        }
+      green = tmp_green;
     }
+  }
+
+  // blue
+  if (tmp_internal >= 66) {
+    blue = 255;
+  } else if (tmp_internal <= 19) {
+    blue = 0;
+  } else {
+    float tmp_blue = 138.5177312231 * log(tmp_internal - 10) - 305.0447927307;
+    if (tmp_blue < 0) {
+      blue = 0;
+    } else if (tmp_blue > 255) {
+      blue = 255;
+    } else {
+      blue = tmp_blue;
+    }
+  }
 }
+
+#define qsubd(x, b)  ((x>b)?b:0)                   // Digital unsigned subtraction macro. if result <0, then => 0. Otherwise, take on fixed value.
+#define qsuba(x, b)  ((x>b)?x-b:0)                 // Analog Unsigned subtraction macro. if result <0, then => 0
+
+void animationA() {                                             // running red stripe.
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t red = (millis() / 10) + (i * 12);                    // speed, length
+    if (red > 128) red = 0;
+    leds2[i] = CRGB(red, 0, 0);
+  }
+} // animationA()
+
+void animationB() {                                               // running green stripe in opposite direction.
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t green = (millis() / 5) - (i * 12);                    // speed, length
+    if (green > 128) green = 0;
+    leds3[i] = CRGB(0, green, 0);
+  }
+} // animationB()
+
+void twinkle() {
+  if (random8() < twinkrate) leds[random16(NUM_LEDS)] += ColorFromPalette(currentPalette, (randhue ? random8() : thishue), 255, currentBlending);
+  fadeToBlackBy(leds, NUM_LEDS, thisfade);
+} // twinkle()
+
+
+
+void ChangeMe() {                                             // A time (rather than loop) based demo sequencer. This gives us full control over the length of each sequence.
+  uint8_t secondHand = (millis() / 1000) % 10;                // IMPORTANT!!! Change '15' to a different value to change duration of the loop.
+  static uint8_t lastSecond = 99;                             // Static variable, means it's only defined once. This is our 'debounce' variable.
+  if (lastSecond != secondHand) {                             // Debounce to make sure we're not repeating an assignment.
+    lastSecond = secondHand;
+    switch (secondHand) {
+      case 0: thisdelay = 10; randhue = 1; thissat = 255; thisfade = 8; twinkrate = 150; break; // You can change values here, one at a time , or altogether.
+      case 5: thisdelay = 100; randhue = 0;  thishue = random8(); thisfade = 2; twinkrate = 20; break;
+      case 10: break;
+    }
+  }
+} // ChangeMe()
+
+void beatwave() {
+  uint8_t wave1 = beatsin8(9, 0, 255);                        // That's the same as beatsin8(9);
+  uint8_t wave2 = beatsin8(8, 0, 255);
+  uint8_t wave3 = beatsin8(7, 0, 255);
+  uint8_t wave4 = beatsin8(6, 0, 255);
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = ColorFromPalette( currentPalette, i + wave1 + wave2 + wave3 + wave4, 255, currentBlending);
+  }
+} // beatwave()
+
+void blendwave() {
+  speed = beatsin8(6, 0, 255);
+
+  clr1 = blend(CHSV(beatsin8(3, 0, 255), 255, 255), CHSV(beatsin8(4, 0, 255), 255, 255), speed);
+  clr2 = blend(CHSV(beatsin8(4, 0, 255), 255, 255), CHSV(beatsin8(3, 0, 255), 255, 255), speed);
+
+  loc1 = beatsin8(10, 0, NUM_LEDS - 1);
+
+  fill_gradient_RGB(leds, 0, clr2, loc1, clr1);
+  fill_gradient_RGB(leds, loc1, clr2, NUM_LEDS - 1, clr1);
+} // blendwave()
+
+void blur() {
+  uint8_t blurAmount = dim8_raw( beatsin8(3, 64, 192) );      // A sinewave at 3 Hz with values ranging from 64 to 192.
+  blur1d( leds, NUM_LEDS, blurAmount);                        // Apply some blurring to whatever's already on the strip, which will eventually go black.
+
+  uint8_t  i = beatsin8(  9, 0, NUM_LEDS);
+  uint8_t  j = beatsin8( 7, 0, NUM_LEDS);
+  uint8_t  k = beatsin8(  5, 0, NUM_LEDS);
+
+  // The color of each point shifts over time, each at a different speed.
+  uint16_t ms = millis();
+  leds[(i + j) / 2] = CHSV( ms / 29, 200, 255);
+  leds[(j + k) / 2] = CHSV( ms / 41, 200, 255);
+  leds[(k + i) / 2] = CHSV( ms / 73, 200, 255);
+  leds[(k + i + j) / 3] = CHSV( ms / 53, 200, 255);
+}//blur()
+
+void confetti() {                                             // random colored speckles that blink in and fade smoothly
+  fadeToBlackBy(leds, NUM_LEDS, thisfade);                    // Low values = slower fade.
+  int pos = random16(NUM_LEDS);                               // Pick an LED at random.
+  leds[pos] += CHSV((thishue + random16(huediff)) / 4 , thissat, thisbri); // I use 12 bits for hue so that the hue increment isn't too quick.
+  thishue = thishue + thisinc;                                // It increments here.
+} // confetti()
+
+void confetti_pal() {                                         // random colored speckles that blink in and fade smoothly
+  fadeToBlackBy(leds, NUM_LEDS, thisfade);                    // Low values = slower fade.
+  int pos = random16(NUM_LEDS);                               // Pick an LED at random.
+  leds[pos] = ColorFromPalette(currentPalette, thishue + random16(huediff) / 4 , thisbri, currentBlending);
+  thishue = thishue + thisinc;                                // It increments here.
+} // confetti_pal()
+
+void dot_beat() {
+  uint8_t inner = beatsin8(bpm, NUM_LEDS / 4, NUM_LEDS / 4 * 3); // Move 1/4 to 3/4
+  uint8_t outer = beatsin8(bpm, 0, NUM_LEDS - 1);             // Move entire length
+  uint8_t middle = beatsin8(bpm, NUM_LEDS / 3, NUM_LEDS / 3 * 2); // Move 1/3 to 2/3
+
+  leds[middle] = CRGB::Purple;
+  leds[inner] = CRGB::Blue;
+  leds[outer] = CRGB::Aqua;
+
+  nscale8(leds, NUM_LEDS, fadeval);                           // Fade the entire array. Or for just a few LED's, use  nscale8(&leds[2], 5, fadeval);
+} // dot_beat()
+
+void ease() {
+  static uint8_t easeOutVal = 0;
+  static uint8_t easeInVal  = 0;
+  static uint8_t lerpVal    = 0;
+
+  easeOutVal = ease8InOutQuad(easeInVal);                     // Start with easeInVal at 0 and then go to 255 for the full easing.
+  easeInVal++;
+
+  lerpVal = lerp8by8(0, NUM_LEDS, easeOutVal);                // Map it to the number of LED's you have.
+
+  leds[lerpVal] = CRGB::Red;
+  fadeToBlackBy(leds, NUM_LEDS, 16);                          // 8 bit, 1 = slow fade, 255 = fast fade
+} // ease()
+
+void everynex() {
+  EVERY_N_MILLIS_I(thisTimer, 100) {                          // This only sets the Initial timer delay. To change this value, you need to use thisTimer.setPeriod(); You could also call it thatTimer and so on.
+    uint8_t timeval = beatsin8(10, 5, 100);                   // Create/modify a variable based on the beastsin8() function.
+    thisTimer.setPeriod(timeval);                             // Use that as our update timer value.
+    ledLoc = (ledLoc + 1) % (NUM_LEDS - 1);                   // A simple routine to just move the active LED UP the strip.
+    leds[ledLoc] = ColorFromPalette(currentPalette, ledLoc, 255, currentBlending);     // Pick a slightly rotating colour from the Palette
+  }
+
+  fadeToBlackBy(leds, NUM_LEDS, 8);                           // Leave a nice comet trail behind.
+}//every n example
+
+void blendme() {
+  uint8_t starthue = beatsin8(20, 0, 255);
+  uint8_t endhue = beatsin8(35, 0, 255);
+  if (starthue < endhue) {
+    fill_gradient(leds, NUM_LEDS, CHSV(starthue, 255, 255), CHSV(endhue, 255, 255), FORWARD_HUES); // If we don't have this, the colour fill will flip around
+  } else {
+    fill_gradient(leds, NUM_LEDS, CHSV(starthue, 255, 255), CHSV(endhue, 255, 255), BACKWARD_HUES);
+  }
+} // blendme()
+
+void inoise8_mover() {
+  uint8_t locn = inoise8(xscale, dist + yscale) % 255;        // Get a new pixel location from moving noise.
+  uint8_t pixlen = map(locn, 0, 255, 0, NUM_LEDS);            // Map that to the length of the strand.
+  leds[pixlen] = ColorFromPalette(currentPalette, pixlen, 255, LINEARBLEND);   // Use that value for both the location as well as the palette index colour for the pixel.
+
+  dist += beatsin8(10, 1, 4);                                              // Moving along the distance (that random number we started out with). Vary it a bit with a sine wave.
+} // inoise8_mover()
+
+void fillnoise8() {
+
+  for (int i = 0; i < NUM_LEDS; i++) {                                     // Just ONE loop to fill up the LED array as all of the pixels change.
+    uint8_t index = inoise8(i * xscale, dist + i * yscale) % 255;          // Get a value from the noise function. I'm using both x and y axis.
+    leds[i] = ColorFromPalette(currentPalette, index, 255, LINEARBLEND);   // With that value, look up the 8 bit colour palette value and assign it to the current LED.
+  }
+
+  dist += beatsin8(10, 1, 4);                                              // Moving along the distance (that random number we started out with). Vary it a bit with a sine wave.
+  // In some sketches, I've used millis() instead of an incremented counter. Works a treat.
+} // fillnoise8()
+
+void noise16_1() {                                            // moves a noise up and down while slowly shifting to the side
+  uint16_t scale = 1000;                                      // the "zoom factor" for the noise
+
+  for (uint16_t i = 0; i < NUM_LEDS; i++) {
+
+    uint16_t shift_x = beatsin8(5);                           // the x position of the noise field swings @ 17 bpm
+    uint16_t shift_y = millis() / 100;                        // the y position becomes slowly incremented
+
+
+    uint16_t real_x = (i + shift_x) * scale;                  // the x position of the noise field swings @ 17 bpm
+    uint16_t real_y = (i + shift_y) * scale;                  // the y position becomes slowly incremented
+    uint32_t real_z = millis() * 20;                          // the z position becomes quickly incremented
+
+    uint8_t noise = inoise16(real_x, real_y, real_z) >> 8;   // get the noise data and scale it down
+
+    uint8_t index = sin8(noise * 3);                         // map LED color based on noise data
+    uint8_t bri   = noise;
+
+    leds[i] = ColorFromPalette(currentPalette, index, bri, LINEARBLEND);   // With that value, look up the 8 bit colour palette value and assign it to the current LED.
+  }
+} // noise16_1()
+
+void noise16_2() {                                            // just moving along one axis = "lavalamp effect"
+  uint8_t scale = 1000;                                       // the "zoom factor" for the noise
+
+  for (uint16_t i = 0; i < NUM_LEDS; i++) {
+
+    uint16_t shift_x = millis() / 10;                         // x as a function of time
+    uint16_t shift_y = 0;
+
+    uint32_t real_x = (i + shift_x) * scale;                  // calculate the coordinates within the noise field
+    uint32_t real_y = (i + shift_y) * scale;                  // based on the precalculated positions
+    uint32_t real_z = 4223;
+
+    uint8_t noise = inoise16(real_x, real_y, real_z) >> 8;    // get the noise data and scale it down
+
+    uint8_t index = sin8(noise * 3);                          // map led color based on noise data
+    uint8_t bri   = noise;
+
+    leds[i] = ColorFromPalette(currentPalette, index, bri, LINEARBLEND);   // With that value, look up the 8 bit colour palette value and assign it to the current LED.
+  }
+} // noise16_2()
+
+void noise16_3() {                                            // no x/y shifting but scrolling along
+  uint8_t scale = 1000;                                       // the "zoom factor" for the noise
+
+  for (uint16_t i = 0; i < NUM_LEDS; i++) {
+
+    uint16_t shift_x = 4223;                                  // no movement along x and y
+    uint16_t shift_y = 1234;
+
+    uint32_t real_x = (i + shift_x) * scale;                  // calculate the coordinates within the noise field
+    uint32_t real_y = (i + shift_y) * scale;                  // based on the precalculated positions
+    uint32_t real_z = millis() * 2;                           // increment z linear
+
+    uint8_t noise = inoise16(real_x, real_y, real_z) >> 7;    // get the noise data and scale it down
+
+    uint8_t index = sin8(noise * 3);                          // map led color based on noise data
+    uint8_t bri   = noise;
+
+    leds[i] = ColorFromPalette(currentPalette, index, bri, LINEARBLEND);   // With that value, look up the 8 bit colour palette value and assign it to the current LED.
+  }
+} // noise16_3()
+
+void one_sine_pal(uint8_t colorIndex) {                                       // This is the heart of this program. Sure is short.
+  thisphase += thisspeed;                                                     // You can change direction and speed individually.
+
+  for (int k = 0; k < NUM_LEDS - 1; k++) {                                    // For each of the LED's in the strand, set a brightness based on a wave as follows:
+    int thisbright = qsubd(cubicwave8((k * allfreq) + thisphase), thiscutoff); // qsub sets a minimum value called thiscutoff. If < thiscutoff, then bright = 0. Otherwise, bright = 128 (as defined in qsub)..
+    leds[k] = CHSV(bgclr, 255, bgbright);                                     // First set a background colour, but fully saturated.
+    leds[k] += ColorFromPalette( currentPalette, colorIndex, thisbright, currentBlending);    // Let's now add the foreground colour.
+    colorIndex += 3;
+  }
+
+  bgclr++;
+} // one_sine_pal()
+
+void ChangePalettePeriodically() {
+  uint8_t secondHand = (millis() / 1000) % 60;
+  static uint8_t lastSecond = 99;
+
+  if (lastSecond != secondHand) {
+    lastSecond = secondHand;
+    CRGB p = CHSV(HUE_PURPLE, 255, 255);
+    CRGB g = CHSV(HUE_GREEN, 255, 255);
+    CRGB b = CRGB::Black;
+    CRGB w = CRGB::White;
+    if (secondHand ==  0)  {
+      targetPalette = RainbowColors_p;
+    }
+    if (secondHand == 10)  {
+      targetPalette = CRGBPalette16(g, g, b, b, p, p, b, b, g, g, b, b, p, p, b, b);
+    }
+    if (secondHand == 20)  {
+      targetPalette = CRGBPalette16(b, b, b, w, b, b, b, w, b, b, b, w, b, b, b, w);
+    }
+    if (secondHand == 30)  {
+      targetPalette = LavaColors_p;
+    }
+    if (secondHand == 40)  {
+      targetPalette = CloudColors_p;
+    }
+    if (secondHand == 50)  {
+      targetPalette = PartyColors_p;
+    }
+  }
+} // ChangePalettePeriodically()
+
+void FillLEDsFromPaletteColors(uint8_t colorIndex) {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = ColorFromPalette(currentPalette, colorIndex + sin8(i * 16), 255);
+    colorIndex += 3;
+  }
+} // FillLEDsFromPaletteColors()
+
+void sinelon() {                                              // a colored dot sweeping back and forth, with fading trails
+  fadeToBlackBy( leds, NUM_LEDS, thisfade);
+  int pos1 = beatsin16(thisbeat, 0, NUM_LEDS);
+  int pos2 = beatsin16(thatbeat, 0, NUM_LEDS);
+
+  leds[(pos1 + pos2) / 2] += ColorFromPalette(currentPalette, myhue++, thisbri, currentBlending);
+} // sinelon()
+
+void ripple() {
+  fadeToBlackBy(leds, NUM_LEDS, fadeval);                             // 8 bit, 1 = slow, 255 = fast
+
+  switch (step) {
+    case -1:                                                          // Initialize ripple variables.
+      center = random(NUM_LEDS);
+      colour = random8();
+      step = 0;
+      break;
+    case 0:
+      leds[center] = ColorFromPalette(currentPalette, colour, myfade, currentBlending);
+      step ++;
+      break;
+    case maxsteps:                                                    // At the end of the ripples.
+      step = -1;
+      break;
+    default:                                                          // Middle of the ripples.
+      leds[(center + step + NUM_LEDS) % NUM_LEDS] += ColorFromPalette(currentPalette, colour, myfade / step * 2, currentBlending);   // Simple wrap from Marc Miller
+      leds[(center - step + NUM_LEDS) % NUM_LEDS] += ColorFromPalette(currentPalette, colour, myfade / step * 2, currentBlending);
+      step ++;                                                         // Next step.
+      break;
+  } // switch step
+} // ripple()
+
+void rainbow_march() {                                        // The fill_rainbow call doesn't support brightness levels
+  thishue++;                                                  // Increment the starting hue.
+  fill_rainbow(leds, NUM_LEDS, thishue, deltahue);            // Use FastLED's fill_rainbow routine.
+} // rainbow_march()
+
+void rainbow_beat() {
+  uint8_t beatA = beatsin8(17, 0, 255);                        // Starting hue
+  uint8_t beatB = beatsin8(13, 0, 255);
+  fill_rainbow(leds, NUM_LEDS, (beatA + beatB) / 2, 8);        // Use FastLED's fill_rainbow routine.
+} // rainbow_beat()
